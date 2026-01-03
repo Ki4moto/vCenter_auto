@@ -1,0 +1,17 @@
+[windows]
+192.168.5.10
+
+[windows:vars]
+ansible_connection=winrm
+ansible_user=Administrator
+ansible_password="sk347dx2"
+ansible_winrm_transport=basic
+ansible_port=5986
+ansible_winrm_scheme=https
+ansible_winrm_server_cert_validation=ignore
+
+[localhost]
+127.0.0.1
+
+[localhost:vars]
+ansible_connection=local

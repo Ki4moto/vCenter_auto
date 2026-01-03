@@ -1,0 +1,459 @@
+
+# Step 1: ESXiを起動（PsExecでWorkstation上のVM起動）
+- name: Create and boot ESXi VM on VMware Workstation via Ansible
+  hosts: windows
+  gather_facts: no
+  collections:
+  - ansible.windows
+
+  vars:
+    base_dir: 'C:\Users\Administrator\Documents\Virtual Machines'
+    vm_name: 'VMware ESXi 8'
+    vm_dir: '{{ base_dir }}\{{ vm_name }}'
+    vmx:     '{{ vm_dir }}\{{ vm_name }}.vmx'
+    vmdk:    '{{ vm_dir }}\{{ vm_name }}.vmdk'
+    vmrun:    'C:\Program Files (x86)\VMware\VMware Workstation\vmrun.exe'
+    vdiskmgr: 'C:\Program Files (x86)\VMware\VMware Workstation\vmware-vdiskmanager.exe'
+    psexec:   'C:\Tools\PsExec.exe'
+    session_id: 1
+    vmx_src: '/mnt/nfs_share/esxi/{{ vm_name }}.vmx'
+
+  tasks:
+    - name: Create directory for ESXi VM
+      ansible.windows.win_file:
+        path: "{{ vm_dir }}"
+        state: directory
+
+    - name: Create 230GB virtual disk
+      ansible.windows.win_shell: >
+        & "{{ vdiskmgr }}" '-c' '-s' '230GB' '-a' 'lsilogic' '-t' '1' '{{ vmdk }}'
+
+    - name: Copy ESXi VMX file
+      ansible.windows.win_copy:
+        src:  "{{ vmx_src }}"
+        dest: "{{ vmx }}"
+
+    - name: Start ESXi VM via PsExec (GUI session)
+      ansible.windows.win_shell: >
+        {{ psexec }} -accepteula -i {{ session_id }} -d "{{ vmrun }}" start "{{ vmx }}"
+      ignore_errors: yes
+
+# Step 2: 起動待機（14分）
+- name: Wait 14 minutes after starting ESXi
+  hosts: localhost
+  gather_facts: no
+  tasks:
+    - name: Wait for 14 minutes
+      ansible.builtin.pause:
+        minutes: 14
+
+# Step 3: ESXi(192.168.5.30)にnfs_datastore(192.168.5.20)をマウントさせる
+- name: Mount NFS datastore directly on standalone ESXi
+  hosts: localhost
+  gather_facts: no
+  collections:
+    - community.vmware
+
+  vars:
+    esxi_host: "192.168.5.30"      # ← ここにESXiのIP
+    esxi_user: "root"
+    esxi_pass: "P@ssw0rd"
+    nfs_server: "192.168.5.20"         # UbuntuのIP
+    nfs_path: "/mnt/nfs_share"
+    datastore_name: "nfs-datastore"
+    esxi_vm_folder: /vmfs/volumes/nfs-datastore
+    vm_name: "win_01"
+    vm_dir: "/vmfs/volumes/nfs-datastore/win_01"
+    vmdk_size_gb: 16
+
+  tasks:
+    - name: Mount NFS datastore on standalone ESXi
+      community.vmware.vmware_host_datastore:
+        hostname: "{{ esxi_host }}"   # ← 接続先はESXi
+        username: "{{ esxi_user }}"
+        password: "{{ esxi_pass }}"
+        validate_certs: false
+        state: present
+        datastore_name: "{{ datastore_name }}"
+        datastore_type: nfs
+        nfs_server: "{{ nfs_server }}"
+        nfs_path: "{{ nfs_path }}"
+        nfs_ro: false
+
+    - name: Create VMDK using vmkfstools
+      ansible.builtin.shell: |
+        sshpass -p '{{ esxi_pass }}' ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null {{ esxi_user }}@{{ esxi_host }} \
+        "vmkfstools -c {{ vmdk_size_gb }}G -d thin {{ vm_dir }}/{{ vm_name }}.vmdk"
+
+# Step 4: 仮想マシン「win_01」の登録
+    - name: 仮想マシンを登録（ESXi内部コマンド）
+      ansible.builtin.shell: >
+        sshpass -p '{{ esxi_pass }}' ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null
+        {{ esxi_user }}@{{ esxi_host }} "vim-cmd solo/registervm {{ esxi_vm_folder }}/{{ vm_name }}/{{ vm_name }}.vmx"
+
+        
+# Step 5: 仮想マシン「win_01」の起動
+- name: PowerCLIで仮想マシンを起動（GUIセッション）
+  hosts: windows
+  gather_facts: no
+  collections:
+  - ansible.windows
+
+  vars:
+    psexec: 'C:\Tools\PsExec.exe'
+    session_id: 1
+    powershell: 'C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe'
+    esxi_host: "192.168.5.30"
+    esxi_user: "root"
+    esxi_pass: "P@ssw0rd"
+    vm_name: "win_01"
+
+  tasks:
+    - name: PowerCLIで{{ vm_name }} を起動（証明書無視）
+      ansible.windows.win_shell: >
+        {{ psexec }} -accepteula -i {{ session_id }} {{ powershell }} -NoProfile -Command
+        "Set-PowerCLIConfiguration -InvalidCertificateAction Ignore -Force | Out-Null;
+        Connect-VIServer -Server {{ esxi_host }} -User {{ esxi_user }} -Password '{{ esxi_pass }}' | Out-Null;
+        Start-VM -VM '{{ vm_name }}'"
+      args:
+        executable: cmd
+      ignore_errors: yes
+
+# Step 6: 「win_01」の構築完了待ち(DNS兼NTPサーバ)(vCenter構築前に必要なサーバ)
+    - name: Wait for 12 minutes
+      ansible.builtin.pause:
+        minutes: 12
+
+# Step 7: vcsa-deployでvCenterを構築
+- name: VCSA deploy from localhost
+  hosts: localhost
+  gather_facts: no
+  tasks:
+    - name: Run vcsa-deploy
+      become: yes
+      ansible.builtin.shell: >
+        "/media/user/VMware VCSA/vcsa-cli-installer/lin64/vcsa-deploy" install /home/user/Desktop/your-config.json --accept-eula --no-ssl-certificate-verification --no-esx-ssl-verify
+      register: vcsa_result
+      ignore_errors: yes
+
+    - name: Show vcsa-deploy stdout
+      debug:
+        var: vcsa_result.stdout_lines
+
+
+# Step 8: esxi-02,esxi-03を登録・起動（Vmware Workstation上で自動構築）
+- name: Start ESXi (2) and (3) on Windows Workstation via PsExec (simplified with common size)
+  hosts: windows
+  gather_facts: no
+
+  vars:
+    base_dir: 'C:\Users\Administrator\Documents\Virtual Machines'
+    vmrun: 'C:\Program Files (x86)\VMware\VMware Workstation\vmrun.exe'
+    vdiskmgr: 'C:\Program Files (x86)\VMware\VMware Workstation\vmware-vdiskmanager.exe'
+    psexec: 'C:\Tools\PsExec.exe'
+    session_id: 1
+    vmx_src_dir: '/mnt/nfs_share/esxi'
+    size_gb: 152
+    vms:
+      - name: 'VMware ESXi 8 (2)'
+      - name: 'VMware ESXi 8 (3)'
+
+  tasks:
+    - name: "Create directory for {{ vm.name }}"
+      ansible.windows.win_file:
+        path: "{{ base_dir }}\\{{ vm.name }}"
+        state: directory
+      loop: "{{ vms }}"
+      loop_control:
+        loop_var: vm
+
+    - name: "Create {{ size_gb }}GB virtual disk for {{ vm.name }}"
+      ansible.windows.win_shell: >
+        & "{{ vdiskmgr }}" -c -s "{{ size_gb }}GB" -a lsilogic -t 1
+        "{{ base_dir }}\{{ vm.name }}\{{ vm.name }}.vmdk"
+      loop: "{{ vms }}"
+      loop_control:
+        loop_var: vm
+
+    - name: "Copy VMX for {{ vm.name }}"
+      ansible.windows.win_copy:
+        src:  "{{ vmx_src_dir }}/{{ vm.name }}.vmx"
+        dest: "{{ base_dir }}\\{{ vm.name }}\\{{ vm.name }}.vmx"
+      loop: "{{ vms }}"
+      loop_control:
+        loop_var: vm
+
+    - name: "Start {{ vm.name }} via PsExec (GUI session)"
+      ansible.windows.win_shell: >
+        {{ psexec }} -accepteula -i {{ session_id }} -d
+        "{{ vmrun }}" start "{{ base_dir }}\{{ vm.name }}\{{ vm.name }}.vmx"
+      loop: "{{ vms }}"
+      loop_control:
+        loop_var: vm
+      ignore_errors: yes
+
+# Step 9 : esxi-02とesxi-03の構築待ち
+    - name: Wait for 27 minutes
+      ansible.builtin.pause:
+        minutes: 27
+
+# Step 10 : esxi-02とesxi-03をvCenterの管理下に追加
+- name: Setup Cluster, VMkernel, and NFS for DRS/Live vMotion
+  hosts: localhost
+  gather_facts: no
+  collections:
+    - community.vmware
+
+  vars:
+    vcenter_hostname: "192.168.5.50"
+    vcenter_username: "administrator@vsphere.local"
+    vcenter_password: "P@ssw0rd"
+    datacenter_name: "Datacenter"
+    cluster_name: "Cluster"
+    esxi_username: "root"
+    esxi_password: "P@ssw0rd"
+    nfs_server: "192.168.5.20"
+    nfs_path: "/mnt/nfs_share"
+    datastore_name: "nfs-datastore"
+    vmk_portgroup: "VMkernel-vMotion"
+    vmk_subnet_mask: "255.255.255.0"
+
+  tasks:
+    - name: Create datacenter
+      community.vmware.vmware_datacenter:
+        hostname: "{{ vcenter_hostname }}"
+        username: "{{ vcenter_username }}"
+        password: "{{ vcenter_password }}"
+        datacenter_name: "{{ datacenter_name }}"
+        validate_certs: false
+        state: present
+
+    - name: Create Cluster under Datacenter
+      community.vmware.vmware_cluster:
+        hostname: "{{ vcenter_hostname }}"
+        username: "{{ vcenter_username }}"
+        password: "{{ vcenter_password }}"
+        datacenter_name: "{{ datacenter_name }}"
+        cluster_name: "{{ cluster_name }}"
+        validate_certs: false
+        state: present
+
+    - name: 5秒待機
+      ansible.builtin.pause:
+        seconds: 5
+
+    - name: Add ESXi host 192.168.5.60 to vCenter Cluster
+      community.vmware.vmware_host:
+        esxi_hostname: "192.168.5.60"
+        esxi_username: "{{ esxi_username }}"
+        esxi_password: "{{ esxi_password }}"
+        validate_certs: false
+        fetch_ssl_thumbprint: true
+        datacenter: "{{ datacenter_name }}"
+        cluster: "{{ cluster_name }}"
+        hostname: "{{ vcenter_hostname }}"
+        username: "{{ vcenter_username }}"
+        password: "{{ vcenter_password }}"
+        state: present
+
+    - name: 5秒待機
+      ansible.builtin.pause:
+        seconds: 5
+
+    - name: Add ESXi host 192.168.5.70 to vCenter Cluster
+      community.vmware.vmware_host:
+        esxi_hostname: "192.168.5.70"
+        esxi_username: "{{ esxi_username }}"
+        esxi_password: "{{ esxi_password }}"
+        validate_certs: false
+        fetch_ssl_thumbprint: true
+        datacenter: "{{ datacenter_name }}"
+        cluster: "{{ cluster_name }}"
+        hostname: "{{ vcenter_hostname }}"
+        username: "{{ vcenter_username }}"
+        password: "{{ vcenter_password }}"
+        state: present
+
+    - name: 5秒待機
+      ansible.builtin.pause:
+        seconds: 5
+
+# Step 10 : vMotion + esxi-02とesx-03にNFSマウント
+    - name: Create portgroup VMkernel-vMotion on 192.168.5.60
+      community.vmware.vmware_portgroup:
+        hostname: '{{ vcenter_hostname }}'
+        username: '{{ vcenter_username }}'
+        password: '{{ vcenter_password }}'
+        esxi_hostname: "192.168.5.60"
+        switch_name: vSwitch0
+        portgroup_name: '{{ vmk_portgroup }}'
+        validate_certs: false
+
+    - name: Create portgroup VMkernel-vMotion on 192.168.5.70
+      community.vmware.vmware_portgroup:
+        hostname: '{{ vcenter_hostname }}'
+        username: '{{ vcenter_username }}'
+        password: '{{ vcenter_password }}'
+        esxi_hostname: "192.168.5.70"
+        switch_name: vSwitch0
+        portgroup_name: '{{ vmk_portgroup }}'
+        validate_certs: false
+
+    - name: Configure VMkernel adapter for vMotion on 192.168.5.60 #vMotionの通信量が多いためvMotion用の通信をできるように、esxi-02上に別のIPを作る(vMotion,HAの仕様)
+      community.vmware.vmware_vmkernel:
+        validate_certs: false
+        hostname: "{{ vcenter_hostname }}"
+        username: "{{ vcenter_username }}"
+        password: "{{ vcenter_password }}"
+        esxi_hostname: "192.168.5.60"
+        portgroup_name: "{{ vmk_portgroup }}"
+        vswitch_name: "vSwitch0"
+        network:
+          type: static
+          ip_address: 192.168.5.61
+          subnet_mask: "{{ vmk_subnet_mask }}"
+        enable_vmotion: true
+
+    - name: Configure VMkernel adapter for vMotion on 192.168.5.70 #vMotionの通信量が多いためvMotion用の通信をできるように、esxi-02上に別のIPを作る(vMotion,HAの仕様)
+      community.vmware.vmware_vmkernel:
+        validate_certs: false
+        hostname: "{{ vcenter_hostname }}"
+        username: "{{ vcenter_username }}"
+        password: "{{ vcenter_password }}"
+        esxi_hostname: "192.168.5.70"
+        portgroup_name: "{{ vmk_portgroup }}"
+        vswitch_name: "vSwitch0"
+        network:
+          type: static
+          ip_address: 192.168.5.71
+          subnet_mask: "{{ vmk_subnet_mask }}"
+        enable_vmotion: true
+
+    - name: Mount NFS datastore on 192.168.5.60
+      community.vmware.vmware_host_datastore:
+        validate_certs: false
+        hostname: "{{ vcenter_hostname }}"
+        username: "{{ vcenter_username }}"
+        password: "{{ vcenter_password }}"
+        esxi_hostname: "192.168.5.60"
+        datastore_name: "{{ datastore_name }}"
+        datastore_type: nfs
+        nfs_server: "{{ nfs_server }}"
+        nfs_path: "{{ nfs_path }}"
+
+    - name: Mount NFS datastore on 192.168.5.70
+      community.vmware.vmware_host_datastore:
+        validate_certs: false
+        hostname: "{{ vcenter_hostname }}"
+        username: "{{ vcenter_username }}"
+        password: "{{ vcenter_password }}"
+        esxi_hostname: "192.168.5.70"
+        datastore_name: "{{ datastore_name }}"
+        datastore_type: nfs
+        nfs_server: "{{ nfs_server }}"
+        nfs_path: "{{ nfs_path }}"
+
+# Step 11 : HA + DRS + EVC を設定
+    - name: Configure vCLS allowed datastore
+      community.vmware.vmware_cluster_vcls:
+        validate_certs: false
+        hostname: "{{ vcenter_hostname }}"
+        username: "{{ vcenter_username }}"
+        password: "{{ vcenter_password }}"
+        datacenter_name: "{{ datacenter_name }}"
+        cluster_name: "{{ cluster_name }}"
+        allowed_datastores:
+          - "nfs-datastore"
+          - "datastore2"
+          - "datastore3"
+
+    - name: Enable HA
+      community.vmware.vmware_cluster_ha:
+        validate_certs: false
+        hostname: "{{ vcenter_hostname }}"
+        username: "{{ vcenter_username }}"
+        password: "{{ vcenter_password }}"
+        datacenter: "{{ datacenter_name }}"
+        cluster_name: "{{ cluster_name }}"
+        enable: true
+
+    - name: Enable DRS
+      community.vmware.vmware_cluster_drs:
+        validate_certs: false
+        hostname: "{{ vcenter_hostname }}"
+        username: "{{ vcenter_username }}"
+        password: "{{ vcenter_password }}"
+        datacenter_name: "{{ datacenter_name }}"
+        cluster_name: "{{ cluster_name }}"
+        enable: true                       # DRS を有効化
+        drs_default_vm_behavior: fullyAutomated  # VM に対する自動配置・自動移行を許可
+        drs_enable_vm_behavior_overrides: false     # VM 個別の振る舞い変更を禁止
+        drs_vmotion_rate: 3                      # vMotion の活性閾値（推奨は3:「中程度」）
+
+    - name: Enable EVC (Intel Haswell)
+      community.vmware.vmware_evc_mode:
+        validate_certs: false
+        hostname: "{{ vcenter_hostname }}"
+        username: "{{ vcenter_username }}"
+        password: "{{ vcenter_password }}"
+        datacenter_name: "{{ datacenter_name }}"
+        cluster_name: "{{ cluster_name }}"
+        evc_mode: "intel-haswell"
+        state: present
+        
+
+# Step 12: 仮想マシン「win_02」の登録
+- name: ESXi上のVMファイルとISOをアップロード＋登録・起動（sshpass使用で完全自動化）
+  hosts: localhost
+  gather_facts: no
+  vars:
+    esxi_host: 192.168.5.60
+    esxi_user: root
+    esxi_pass: P@ssw0rd
+    esxi_vm_folder: /vmfs/volumes/nfs-datastore
+    vm_name: "win_02"
+    vm_dir: "/vmfs/volumes/nfs-datastore/win_02"
+    vmdk_size_gb: 16
+
+  tasks:
+    - name: Create VMDK using vmkfstools
+      ansible.builtin.shell: |
+        sshpass -p '{{ esxi_pass }}' ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null {{ esxi_user }}@{{ esxi_host }} \
+        "vmkfstools -c {{ vmdk_size_gb }}G -d thin {{ vm_dir }}/{{ vm_name }}.vmdk"
+
+    - name: 仮想マシンを登録（ESXi内部コマンド）
+      ansible.builtin.shell: >
+        sshpass -p '{{ esxi_pass }}' ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null
+        {{ esxi_user }}@{{ esxi_host }} "vim-cmd solo/registervm {{ esxi_vm_folder }}/{{ vm_name }}/{{ vm_name }}.vmx"
+
+    - name: 5秒待機
+      ansible.builtin.pause:
+        seconds: 5
+
+# Step 13: 仮想マシン「win_02」の起動
+- name: PowerCLIで仮想マシンを起動（GUIセッション）
+  hosts: windows
+  gather_facts: no
+  collections:
+  - ansible.windows
+
+  vars:
+    psexec: 'C:\Tools\PsExec.exe'
+    session_id: 1
+    powershell: 'C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe'
+    esxi_user: "root"
+    esxi_pass: "P@ssw0rd"
+    vm_name: "win_02"
+    esxi_hosts:
+      - "192.168.5.60"
+      - "192.168.5.70"
+
+  tasks:
+    - name: PowerCLIで{{ vm_name }} を各ESXiで起動（証明書無視）
+      ansible.windows.win_shell: >
+        {{ psexec }} -accepteula -i {{ session_id }} {{ powershell }} -NoProfile -Command
+        "Set-PowerCLIConfiguration -InvalidCertificateAction Ignore -Force | Out-Null;
+         Connect-VIServer -Server {{ item }} -User {{ esxi_user }} -Password '{{ esxi_pass }}' | Out-Null;
+         Start-VM -VM '{{ vm_name }}'"
+      loop: "{{ esxi_hosts }}"
+      ignore_errors: yes
