@@ -2,7 +2,7 @@ vCenter 自動構築（Nested ESXi + Ansible）
 1. 概要
 
 本成果物は、Windows ノートPC上の VMware Workstation を基盤とし、
-Nested ESXi 環境に vCenter Server を自動構築するための検証・学習用環境です。
+オフライン環境にて Nested ESXi 環境に vCenter Server を自動構築する成果物です。
 
 vCenter Server Appliance（VCSA）を Ansible + vcsa-deploy で自動デプロイ
 
@@ -243,4 +243,5 @@ VMware Workstation のブリッジ NIC 設定に注意
 最後に（評価視点）
 
 本 README は 第三者がそのまま再現可能な一次資料として作成しています。
+
 設計意図・構成・実行手順を一貫して説明できる成果物です。
