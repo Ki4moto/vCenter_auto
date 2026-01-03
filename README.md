@@ -4,6 +4,8 @@ vCenter 自動構築（Nested ESXi + Ansible）
 本成果物は、Windows ノートPC上の VMware Workstation を基盤とし、
 オフライン環境にて Nested ESXi 環境に vCenter Server を自動構築する成果物です。
 
+Ansible,Shell,KickStart,Autounattendを用いて作成
+
 vCenter Server Appliance（VCSA）を Ansible + vcsa-deploy で自動デプロイ
 
 複数の Nested ESXi を vCenter 管理下クラスタに追加
@@ -215,6 +217,8 @@ HA（Live vMotion）/ DRS を有効化し、運用を想定した構成を再現
 
 7. 実行後の状態
 
+ESXi #1 / #2 / #3 を自動構築
+
 ESXi #1 / #2 / #3 にUbuntu内のNFSサーバをマウント
 
 オフラインでのvCenter自動構築に必要なDNS兼NTPサーバを自動構築(win_01)
@@ -245,3 +249,4 @@ VMware Workstation のブリッジ NIC 設定に注意
 本 README は 第三者がそのまま再現可能な一次資料として作成しています。
 
 設計意図・構成・実行手順を一貫して説明できる成果物です。
+
