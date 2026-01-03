@@ -1,0 +1,125 @@
+windows側
+⓵Administratorでログインすること(userでログインは不可)
+⓶「PsExec.exe」をサイトからダウンロード(「PsExec.exe ダウンロード」で検索)
+⓷windowsPCの「C:\」配下に「Tools」フォルダを作成⇒「PsExec.exe」を配置
+⓸windowsPCの「C:\」配下に「esxi_auto」フォルダを作成
+
+
+ubuntu側
+
+ubuntu仮想マシン作成については以下動画を参考
+
+ 構築手順URL：https://youtu.be/QvJOxKfZWsg
+
+
+
+　※以下isoを予め製品サイトからダウンロードすること(以下iso名でwebサイト検索)
+     ・ubuntu-24.04.2-desktop-amd64.iso
+     ・VMware-VMvisor-Installer-8.0U1a-21813344.x86_64.iso
+     ・VMware-VCSA-all-8.0.1-21860503.iso
+     ・SERVER_EVAL_x64FRE_ja-jp.iso
+
+
+
+※以下はubuntu仮想マシン作成、再起動を経てインストール完了後のコマンド操作
+
+--------ここは手動でコマンドを入力する必要アリ------------------------
+
+sudo -i
+echo "nameserver 8.8.8.8" | sudo tee /etc/resolv.conf > /dev/null
+
+apt update
+sudo apt install -y open-vm-tools open-vm-tools-desktop
+sudo shutdown -h now
+
+
+※shut後にubuntuを起動する際に、
+⓵
+VCSAをisoとしてマウントしてubuntuを起動しなおすこと
+(vcenter-deployの実行に必要)
+
+⓶
+ethernet0.virtualDev 
+で検索して、
+「ethernet0.virtualDev = "vlance"」
+を消去して
+ethernet0.virtualDev = "vmxnet3"
+を挿入する
+
+
+
+---------こっから下はコマンドをコピペ可能------------------------------------
+
+※起動後、以下ファイルを/home/user/Desktop/にCtrl+C⇒Ctrl+Vでコピペする
+   ・ansible.cfg
+   ・hosts
+   ・install_all.sh
+   ・vCenter_auto.yaml
+   ・your-config.json
+
+
+
+※ssh scp使うため以下コマンドをコピペ
+  sudo -i
+    ※パスワード「P@ssw0rd」を手動入力
+  echo "nameserver 8.8.8.8" | sudo tee /etc/resolv.conf > /dev/null
+  sudo apt install -y openssh-server dos2unix
+
+
+※Teratermの「SSH SCP…」から以下ファイルを
+  ubuntuの「/home/user/Desktop/」に配置する。
+   ・mnt.tar.gz
+   ・iso_material.7z
+   ・vCLS-0fbe7a01-4565-493a-9968-14e611691acd.7z
+   ・vCLS-39831299-7fc9-4d21-a0ea-f8cc1eaa63bc.7z
+   ・VMware-VMvisor-Installer-8.0U1a-21813344.x86_64.iso
+   ・SERVER_EVAL_x64FRE_ja-jp.iso
+
+/home/user/Desktop/
+
+※ファイル移動、完了後に以下コマンドを入力
+
+ #/home/user/Desktop/配下の全ての「.sh」に実行権限をつける
+ #/home/user/Desktop/配下の全ての「.sh」をubuntuで実行できるように整える
+cd /home/user/Desktop/
+sudo chmod +x /home/user/Desktop/install_all.sh
+sudo dos2unix /home/user/Desktop/install_all.sh
+sudo /home/user/Desktop/install_all.sh
+
+
+※Teratermの「SSH SCP…」から
+/home/user/Desktop/esxi_01.iso
+にあるesxi.isoを、windowsの「C:\esxi_auto」配下に配置
+
+
+
+------ノートPCのwindowsのcmdを起動して入力------
+query session
+
+ここの「Administrator」のIDがsessionIDになる
+
+「vCenter_auto.yaml」ファイル内の「sessionID」を全て↑のsessionID番号に修正する。
+
+※ファイル内で「Ctrl+F」⇒検索バーに「session ID」をコピペ、Enter
+　ひっかかる所のSession IDを全て↑のsessionID番号に修正する。
+
+⓵
+「192.168.1.20」⇒「192.168.5.20」
+「192.168.1.1」⇒「192.168.5.1」にネットワーク変更
+⓶
+vmware workstationのツールバーの「編集(E)」⇒「仮想ネットワークエディタ(N)…」を選択
+「ブリッジ先(G):」のプルダウンを「wi-fiのポート(Wireless Adaptor)」から
+「WindowsPCのポート(Intel(R) Ethernet Connection …)」に変更してポップアップ画面下の「OK」を選択
+ ※ubuntuの再起動不要
+
+
+cd /home/user/Desktop/
+ansible-playbook -i hosts vCenter_auto.yaml
+
+
+
+---------------------------------------------
+※vCenter自動構築の様子については以下動画を参考
+  
+   vCenter自動構築URL：https://youtu.be/kzkzLdW9ePM
+----------------------------------------------
