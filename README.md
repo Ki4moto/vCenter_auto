@@ -272,6 +272,12 @@ HA（Live vMotion）/ DRS を有効化し、運用を想定した構成を再現
 　　※ファイル内で「Ctrl+F」⇒検索バーに「session ID」をコピペ、Enter
 　　　ひっかかる所のSession IDを全て↑のsessionID番号に修正する。
 
+　　------hostsファイルの内容修正------------
+　　　資材内の「hosts」ファイルの7行目の
+　　　ansible_password=""
+　　　の「""」の間に、自身のWindowsPCのAdministratorアカウントのパスワードを記載する
+   ----------------------------------------    
+
    ------Ubuntu、VMware Workstationに設定------
 　　⓵Ubuntuの設定
 　　Ubuntu内の設定(画面右上の歯車)⇒「ネットワーク」タブを選択
@@ -322,6 +328,7 @@ VMware Workstation のブリッジ NIC 設定に注意
 本 README は 第三者がそのまま再現可能な一次資料として作成しています。
 
 設計意図・構成・実行手順を一貫して説明できる成果物です。
+
 
 
 
